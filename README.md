@@ -8,6 +8,9 @@ The approach applies principles from [textual criticism](https://en.wikipedia.or
 
 [WhisperX](https://github.com/m-bain/whisperX) improves a single Whisper run with voice-activity-detection (VAD) chunking, word-level timestamps, and speaker diarization — but the transcript still comes from one model pass. Transcribe Critic takes a different approach: it runs multiple ASR models (Whisper, Parakeet, Qwen3-ASR), pulls in YouTube captions and external human-edited transcripts, and treats them all as independent witnesses. An LLM then adjudicates every disagreement blindly, without knowing which source produced which reading. The result is a merged "critical text" that is more accurate than any single source. If you just need fast, well-segmented Whisper output, WhisperX is the right tool; if you want the most accurate transcript possible from multiple sources, this is.
 
+For local audio/video files, remote ASR through LocalAI, and a Codex CLI critic,
+see [the LocalAI guide](docs/localai.md).
+
 ## Features
 
 - **Critical text merging**: Combines 2–3+ transcript sources into the most accurate version using blind, anonymous presentation to an LLM — no source receives preferential treatment

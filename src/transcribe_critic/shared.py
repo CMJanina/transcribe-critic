@@ -288,6 +288,10 @@ class SpeechConfig:
     # Local LLM (default) vs cloud API
     local: bool = True  # Use local Ollama by default
     local_model: str = DEFAULT_LOCAL_MODEL  # Default Ollama model for text
+    local_reasoning_effort: Optional[str] = None
+    ensemble_strict_choices: bool = False
+    codex_model: Optional[str] = None
+    codex_reasoning_effort: str = "xhigh"
     local_vision_model: str = DEFAULT_LOCAL_VISION_MODEL  # Default Ollama model for vision
     ollama_base_url: str = DEFAULT_OLLAMA_URL
     # Merge/ensemble LLM overrides
@@ -522,6 +526,8 @@ def _has_vision_content(messages: list) -> bool:
 
 def create_llm_client(config: SpeechConfig):
     """Create either an Anthropic or OpenAI-compatible (Ollama) client."""
+    if config.codex_model:
+        return None
     if config.local:
         from openai import OpenAI
         return OpenAI(base_url=config.ollama_base_url, api_key="ollama")
@@ -537,6 +543,10 @@ def llm_call_with_retry(client, config: SpeechConfig, **kwargs) -> object:
     Supports both Anthropic and OpenAI-compatible (Ollama) clients.
     Returns a response with .content[0].text and .usage attributes.
     """
+    if config.codex_model:
+        from transcribe_critic.codex import call_codex
+        return call_codex(config, **kwargs)
+
     def _retry_with_backoff(call_fn, timeout_exc, status_exc, retryable_codes, label):
         delay = config.api_initial_backoff
         for attempt in range(1, config.api_max_retries + 1):
@@ -571,9 +581,14 @@ def llm_call_with_retry(client, config: SpeechConfig, **kwargs) -> object:
             "max_tokens": kwargs.get("max_tokens", 4096),
             "messages": messages,
         }
+        if config.local_reasoning_effort is not None:
+            openai_kwargs["reasoning_effort"] = config.local_reasoning_effort
 
         def _call_openai():
-            return _NormalizedResponse(client.chat.completions.create(**openai_kwargs))
+            response = client.chat.completions.create(**openai_kwargs)
+            if config.ensemble_strict_choices and response.choices[0].finish_reason == "length":
+                raise RuntimeError("Critic response exceeded its token budget; no decisions were accepted")
+            return _NormalizedResponse(response)
 
         return _retry_with_backoff(
             _call_openai, APITimeoutError, APIStatusError,

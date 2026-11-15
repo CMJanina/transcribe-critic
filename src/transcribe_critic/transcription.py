@@ -710,6 +710,18 @@ def _call_and_parse_cluster(client, config, cluster, cluster_prompt,
 
     response = _clean_llm_output(message.content[0].text)
 
+    if config.ensemble_strict_choices:
+        decisions = re.findall(r"(?m)^\s*(\d+)[.):]\s*([A-Z])\s*$", response)
+        expected = set(range(1, len(cluster) + 1))
+        if (len(decisions) != len(cluster)
+                or {int(num) for num, _ in decisions} != expected):
+            raise ValueError(f"Critic did not return one letter per disagreement: {response!r}")
+        for num, choice in decisions:
+            diff = cluster[int(num) - 1]
+            count = len(diff["readings"]) if "readings" in diff else 2
+            if not 0 <= ord(choice) - ord("A") < count:
+                raise ValueError(f"Invalid critic choice {choice!r} for disagreement {num}")
+
     cluster_choices = [None] * len(cluster)
     cluster_resolutions = {}
 
