@@ -41,9 +41,17 @@ Failures are recorded in `failures.json`, and processing continues with the next
 file. The process exits with a nonzero status if any file failed.
 
 Rerun the same command to resume. Raw ASR responses and completed ensemble
-chunks are reused. Changed input files, models or settings require a new output
-directory to avoid reusing incompatible results. The first model alphabetically
-is the ensemble's base transcript; this is not an accuracy ranking.
+chunks are reused. The directory suffix uses the first ten characters of the
+video's SHA-256 content hash; the manifest verifies the full hash. Copying the
+source and output to another machine works even when the source path,
+modification time or LocalAI URL changes. Keep the source filename unchanged.
+Hashing reads the entire source file on every run.
+
+Changed file contents, models or inference settings require a new output
+directory to avoid reusing incompatible results. Outputs from the earlier
+path-hash wrapper need a one-time directory and manifest migration. The first
+model alphabetically is the ensemble's base transcript; this is not an accuracy
+ranking.
 
 ## Output
 

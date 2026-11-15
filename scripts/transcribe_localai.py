@@ -36,6 +36,14 @@ def command(args):
     return subprocess.run(args, check=True, capture_output=True, text=True)
 
 
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def prepare_chunks(source, output, args):
     """Prefer pauses for boundaries; retain source offsets for later alignment."""
     with tempfile.TemporaryDirectory(dir=output) as temp:
@@ -84,21 +92,26 @@ def prepare_chunks(source, output, args):
 
 def transcribe_file(source, args, client, models):
     stat = source.stat()
-    identity = hashlib.sha256(str(source).encode()).hexdigest()[:10]
-    output = args.output_dir / f"{source.stem}-{identity}"
+    print(f"Hashing {source.name}")
+    digest = file_sha256(source)
+    output = args.output_dir / f"{source.stem}-{digest[:10]}"
     output.mkdir(parents=True, exist_ok=True)
     settings = {"source": str(source), "size": stat.st_size,
+                "sha256": digest,
                 "mtime_ns": stat.st_mtime_ns, "base_url": args.base_url,
                 "asr_models": models, "critic_model": args.critic_model,
                 "start": args.start, "duration": args.duration,
                 "chunk_seconds": args.chunk_seconds, "language": args.language,
                 "critic": args.critic,
                 "critic_reasoning_effort": args.critic_effort if args.critic == "codex" else "none",
-                "transcribe_critic_version": __version__, "wrapper_version": 2}
+                "transcribe_critic_version": __version__, "wrapper_version": 3}
     manifest_path = output / "manifest.json"
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
-        if manifest["settings"] != settings:
+        location_fields = {"source", "mtime_ns", "base_url"}
+        saved_settings = {k: v for k, v in manifest["settings"].items() if k not in location_fields}
+        current_settings = {k: v for k, v in settings.items() if k not in location_fields}
+        if saved_settings != current_settings:
             raise ValueError(f"Settings or source changed for {output}. Use a new --output-dir.")
         chunks = manifest["chunks"]
         for chunk in chunks:
