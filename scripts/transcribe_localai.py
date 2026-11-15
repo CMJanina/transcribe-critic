@@ -44,6 +44,44 @@ def file_sha256(path):
     return digest.hexdigest()
 
 
+def critic_settings(settings):
+    return {key: settings[key] for key in (
+        "critic", "critic_model", "critic_reasoning_effort", "transcribe_critic_version")}
+
+
+def critic_directory(directory, settings, models, legacy_settings):
+    identity = {
+        "critic": critic_settings(settings),
+        "transcripts": {model: file_sha256(directory / f"asr_{model}.txt") for model in models},
+        "cache_version": 1,
+    }
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    output = directory / "critics" / digest
+    if not output.exists():
+        output.mkdir(parents=True)
+        legacy_matches = (
+            critic_settings(settings) == critic_settings(legacy_settings)
+            and models == legacy_settings["asr_models"]
+        )
+        if legacy_matches:
+            for name in ("asr_merged.txt", "ensemble_chunks", "codex_calls"):
+                source = directory / name
+                if source.is_dir():
+                    shutil.copytree(source, output / name)
+                elif source.is_file():
+                    if name != "asr_merged.txt" or all(
+                            source.stat().st_mtime_ns >= (directory / f"asr_{m}.txt").stat().st_mtime_ns
+                            for m in models):
+                        shutil.copy2(source, output / name)
+    save_json(output / "settings.json", identity)
+    for model in models:
+        source = directory / f"asr_{model}.txt"
+        target = output / source.name
+        if not target.exists():
+            shutil.copy2(source, target)
+    return output
+
+
 def prepare_chunks(source, output, args):
     """Prefer pauses for boundaries; retain source offsets for later alignment."""
     with tempfile.TemporaryDirectory(dir=output) as temp:
@@ -104,13 +142,13 @@ def transcribe_file(source, args, client, models):
                 "chunk_seconds": args.chunk_seconds, "language": args.language,
                 "critic": args.critic,
                 "critic_reasoning_effort": args.critic_effort if args.critic == "codex" else "none",
-                "transcribe_critic_version": __version__, "wrapper_version": 3}
+                "transcribe_critic_version": __version__, "wrapper_version": 4}
     manifest_path = output / "manifest.json"
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
-        location_fields = {"source", "mtime_ns", "base_url"}
-        saved_settings = {k: v for k, v in manifest["settings"].items() if k not in location_fields}
-        current_settings = {k: v for k, v in settings.items() if k not in location_fields}
+        audio_fields = ("sha256", "size", "start", "duration", "chunk_seconds", "language")
+        saved_settings = {k: manifest["settings"].get(k) for k in audio_fields}
+        current_settings = {k: settings[k] for k in audio_fields}
         if saved_settings != current_settings:
             raise ValueError(f"Settings or source changed for {output}. Use a new --output-dir.")
         chunks = manifest["chunks"]
@@ -131,7 +169,8 @@ def transcribe_file(source, args, client, models):
         for chunk in chunks:
             directory = output / chunk["directory"]
             raw_path = directory / f"asr_{model}.json"
-            if raw_path.exists():
+            cached = raw_path.exists()
+            if cached:
                 raw = json.loads(raw_path.read_text())
             else:
                 with (directory / "audio.wav").open("rb") as audio:
@@ -146,18 +185,20 @@ def transcribe_file(source, args, client, models):
             text = raw["text"].strip() + "\n"
             if not text_path.exists() or text_path.read_text() != text:
                 text_path.write_text(text)
-            print(f"  {chunk['directory']}: {len(raw['text'].split())} words")
+            print(f"  {chunk['directory']}: {len(raw['text'].split())} words"
+                  + (" [cached]" if cached else ""))
 
     merged_chunks = []
     for chunk in chunks:
         directory = output / chunk["directory"]
-        merged_path = directory / "asr_merged.txt"
+        critic_dir = critic_directory(directory, settings, models, manifest["settings"])
+        merged_path = critic_dir / "asr_merged.txt"
         if not merged_path.exists():
             data = SpeechData(audio_path=directory / "audio.wav")
             for model in models:
-                data.register_transcript(model, directory / f"asr_{model}.txt")
+                data.register_transcript(model, critic_dir / f"asr_{model}.txt")
             config = SpeechConfig(
-                url=str(source), output_dir=directory, models=models,
+                url=str(source), output_dir=critic_dir, models=models,
                 local=True, local_model=args.critic_model,
                 local_reasoning_effort="none", ensemble_strict_choices=True,
                 codex_model=args.critic_model if args.critic == "codex" else None,
@@ -166,8 +207,12 @@ def transcribe_file(source, args, client, models):
                 summarize=False, merge_sources=False,
             )
             _ensemble_asr_transcripts(config, data)
+        else:
+            print(f"  {chunk['directory']}: reusing diff resolution with {args.critic_model}")
         text = merged_path.read_text().strip()
         merged_chunks.append({**chunk, "text": text})
+    manifest["last_run"] = settings
+    save_json(manifest_path, manifest)
     save_json(output / "transcript.json", {
         "source": str(source), "timing": "audio chunks only, not aligned words",
         "chunks": merged_chunks,

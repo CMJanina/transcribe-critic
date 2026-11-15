@@ -47,11 +47,18 @@ source and output to another machine works even when the source path,
 modification time or LocalAI URL changes. Keep the source filename unchanged.
 Hashing reads the entire source file on every run.
 
-Changed file contents, models or inference settings require a new output
-directory to avoid reusing incompatible results. Outputs from the earlier
-path-hash wrapper need a one-time directory and manifest migration. The first
-model alphabetically is the ensemble's base transcript; this is not an accuracy
-ranking.
+Adding an ASR model runs only that model on the saved audio chunks. Existing
+model results are reused. Diff resolution reruns when the participating ASR
+models or their transcript text changes, or when the critic backend, model or
+reasoning effort changes. Previous critic runs remain cached, so switching back
+can reuse their results. Changing a model behind the same model ID is not
+detected.
+
+Changed file contents, audio sampling/chunk settings or the language hint
+require a new output directory. Outputs from the earlier path-hash wrapper need
+a one-time directory and manifest migration. Content-hash outputs from the
+previous wrapper are accepted automatically. The first model alphabetically is
+the ensemble's base transcript; this is not an accuracy ranking.
 
 ## Output
 
@@ -60,8 +67,10 @@ ranking.
   offsets. These are chunk boundaries, not aligned word timestamps.
 - `manifest.json` records the source, settings, model IDs and chunk boundaries.
 - `chunk_*/audio.wav` retains the exact 16 kHz mono audio sent for inference.
-- Each chunk also retains raw `asr_*.json` responses, source transcripts and the
-  ensemble's cached decisions. `codex_calls/` stores Codex responses and logs.
+- Each chunk retains raw `asr_*.json` responses and source transcripts. Critic
+  results and checkpoints live in `critics/<hash>/`, with their cache settings.
+  Its `codex_calls/` directory stores Codex responses and logs. Matching legacy
+  critic results are imported automatically without deleting the original files.
 
 Chunks are at most 120 seconds by default. The splitter prefers pauses in the
 second half of each chunk. If no suitable pause exists, it makes a hard cut and
