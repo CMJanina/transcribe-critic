@@ -45,7 +45,7 @@ def file_sha256(path):
 
 
 def critic_settings(settings):
-    return {key: settings[key] for key in (
+    return {key: settings.get(key) for key in (
         "critic", "critic_model", "critic_reasoning_effort", "transcribe_critic_version")}
 
 
@@ -61,7 +61,7 @@ def critic_directory(directory, settings, models, legacy_settings):
         output.mkdir(parents=True)
         legacy_matches = (
             critic_settings(settings) == critic_settings(legacy_settings)
-            and models == legacy_settings["asr_models"]
+            and models == legacy_settings.get("asr_models")
         )
         if legacy_matches:
             for name in ("asr_merged.txt", "ensemble_chunks", "codex_calls"):
