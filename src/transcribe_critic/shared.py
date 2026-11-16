@@ -12,12 +12,17 @@ import shutil
 import subprocess
 import tempfile
 import time
+import threading
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from dataclasses import dataclass, field, replace
 from typing import NamedTuple, Optional
 
 import builtins
+
+log_context = ContextVar("log_context", default="")
+_print_lock = threading.Lock()
 
 
 def tprint(*args, **kwargs):
@@ -30,7 +35,10 @@ def tprint(*args, **kwargs):
         builtins.print(*args, flush=True, **kwargs)
         return
     stamp = time.strftime("[%H:%M:%S]")
-    builtins.print(stamp, *args, flush=True, **kwargs)
+    context = log_context.get()
+    prefix = [stamp, f"[{context}]"] if context else [stamp]
+    with _print_lock:
+        builtins.print(*prefix, *args, flush=True, **kwargs)
 
 
 print = tprint

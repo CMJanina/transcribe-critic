@@ -33,12 +33,23 @@ After reviewing the sample, process a directory:
 
 ```sh
 .venv/bin/python scripts/transcribe_localai.py "/path/to/archive/" \
-  --output-dir transcripts/archive
+  --output-dir transcripts/archive --workers 4
 ```
 
 Directories are scanned recursively. Each source gets its own output directory.
 Failures are recorded in `failures.json`, and processing continues with the next
 file. The process exits with a nonzero status if any file failed.
+
+`--workers 4` processes up to four files concurrently. While one file waits for
+Codex, other workers can transcribe or resolve other files. Each file still
+processes its own chunks in order. The default is one worker. The limit applies
+to both ASR requests and critic jobs, so choose a number your LocalAI host can
+handle. Increasing it does not change cache identities or require a migration.
+Log lines include the source filename. Files with the same stem are serialized
+to prevent simultaneous writes to a shared output directory.
+
+Ctrl+C stops queued work. Active chunks finish and save their results before the
+workers exit. Restart the command to resume from the saved progress.
 
 Rerun the same command to resume. Raw ASR responses and completed ensemble
 chunks are reused. The directory suffix uses the first ten characters of the

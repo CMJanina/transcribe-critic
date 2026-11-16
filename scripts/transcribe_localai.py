@@ -17,12 +17,14 @@ import subprocess
 import sys
 import tempfile
 import wave
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 
 from openai import OpenAI
 
 from transcribe_critic import __version__
-from transcribe_critic.shared import SpeechConfig, SpeechData, tprint as print
+from transcribe_critic.shared import SpeechConfig, SpeechData, log_context, tprint as print
 from transcribe_critic.transcription import _ensemble_asr_transcripts
 
 
@@ -128,7 +130,7 @@ def prepare_chunks(source, output, args):
     return chunks
 
 
-def transcribe_file(source, args, client, models):
+def transcribe_file(source, args, client, models, stop_event=None):
     stat = source.stat()
     print(f"Hashing {source.name}")
     digest = file_sha256(source)
@@ -167,6 +169,8 @@ def transcribe_file(source, args, client, models):
     for model in models:
         print(f"ASR {model}, {len(chunks)} chunk(s)")
         for chunk in chunks:
+            if stop_event is not None and stop_event.is_set():
+                raise InterruptedError("Stopped between chunks")
             directory = output / chunk["directory"]
             raw_path = directory / f"asr_{model}.json"
             cached = raw_path.exists()
@@ -190,6 +194,8 @@ def transcribe_file(source, args, client, models):
 
     merged_chunks = []
     for chunk in chunks:
+        if stop_event is not None and stop_event.is_set():
+            raise InterruptedError("Stopped between chunks")
         directory = output / chunk["directory"]
         critic_dir = critic_directory(directory, settings, models, manifest["settings"])
         merged_path = critic_dir / "asr_merged.txt"
@@ -223,6 +229,50 @@ def transcribe_file(source, args, client, models):
     return output
 
 
+def run_files(files, args, client, models):
+    # Matching stems can share an output directory when the contents also match.
+    locks = {source.stem: threading.Lock() for source in files}
+    stop_event = threading.Event()
+
+    def process(index, source):
+        with locks[source.stem]:
+            if stop_event.is_set():
+                return None
+            token = log_context.set(source.name)
+            try:
+                print(f"File {index}/{len(files)}: {source}")
+                transcribe_file(source, args, client, models, stop_event)
+            except InterruptedError:
+                print("Stopped; completed chunks remain cached")
+            except Exception as exc:
+                print(f"Failed: {source}: {exc}")
+                if isinstance(exc, subprocess.CalledProcessError):
+                    print(exc.stderr[-2000:])
+                return {"source": str(source), "error": str(exc)}
+            finally:
+                log_context.reset(token)
+        return None
+
+    with ThreadPoolExecutor(max_workers=min(args.workers, len(files))) as pool:
+        futures = [pool.submit(process, index, source)
+                   for index, source in enumerate(files, 1)]
+        try:
+            for future in as_completed(futures):
+                future.result()
+        except KeyboardInterrupt:
+            stop_event.set()
+            for future in futures:
+                future.cancel()
+            print("Stopping workers after active chunks finish; queued files will not start")
+    failed = []
+    for future in futures:
+        if not future.cancelled():
+            result = future.result()
+            if result is not None:
+                failed.append(result)
+    return failed, stop_event.is_set()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("inputs", type=Path, nargs="+", help="Local media files or directories")
@@ -232,11 +282,15 @@ def main():
     parser.add_argument("--critic-model", help="Default: gpt-6-luna, or ternary-bonsai-2-27b with --critic localai")
     parser.add_argument("--critic-effort", choices=["low", "medium", "high", "xhigh", "max"], default="xhigh")
     parser.add_argument("--output-dir", type=Path, default=Path("transcripts/localai"))
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Maximum files processed concurrently (default: 1)")
     parser.add_argument("--chunk-seconds", type=float, default=120)
     parser.add_argument("--start", type=float, default=0, help="Source offset for a sample")
     parser.add_argument("--duration", type=float, help="Limit audio duration for a sample")
     parser.add_argument("--language", help="Optional ISO language hint, e.g. de")
     args = parser.parse_args()
+    if args.workers < 1:
+        parser.error("--workers must be at least 1")
     if not args.base_url:
         parser.error("Pass --base-url or set LOCALAI_BASE_URL")
     args.critic_model = args.critic_model or (
@@ -283,20 +337,12 @@ def main():
     files = list(dict.fromkeys(files))
     if not files:
         parser.error("No media files found")
-    print(f"{len(files)} file(s), ASR models: {', '.join(models)}, critic: {args.critic_model}")
-    failed = []
-    for index, source in enumerate(files, 1):
-        print(f"File {index}/{len(files)}: {source}")
-        try:
-            transcribe_file(source, args, client, models)
-        except Exception as exc:
-            print(f"Failed: {source}: {exc}")
-            if isinstance(exc, subprocess.CalledProcessError):
-                print(exc.stderr[-2000:])
-            failed.append({"source": str(source), "error": str(exc)})
+    print(f"{len(files)} file(s), workers: {args.workers}, "
+          f"ASR models: {', '.join(models)}, critic: {args.critic_model}")
+    failed, interrupted = run_files(files, args, client, models)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     save_json(args.output_dir / "failures.json", failed)
-    return bool(failed)
+    return 130 if interrupted else bool(failed)
 
 
 if __name__ == "__main__":
